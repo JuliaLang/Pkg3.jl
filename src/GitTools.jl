@@ -86,6 +86,7 @@ function setprotocol!(;
 end
 
 function normalize_url(url::AbstractString)
+    url = expanduser(url)
     m = match(GIT_REGEX, url)
     m === nothing && return url
 
