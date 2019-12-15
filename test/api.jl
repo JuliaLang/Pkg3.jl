@@ -83,4 +83,9 @@ end
     end
 end
 
+@testset "@__VERSION__" begin
+    @test @__VERSION__() === nothing
+    @test Pkg.eval(:(@__VERSION__())) == Pkg.Types.read_project("../Project.toml").version
+end
+
 end # module APITests

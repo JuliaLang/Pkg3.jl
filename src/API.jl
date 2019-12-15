@@ -8,7 +8,7 @@ import Random
 using Dates
 import LibGit2
 
-import ..depots, ..depots1, ..logdir, ..devdir
+import ..depots, ..depots1, ..logdir, ..devdir, ..pkgdir
 import ..Operations, ..Display, ..GitTools, ..Pkg, ..UPDATED_REGISTRY_THIS_SESSION
 using ..Types, ..TOML
 using ..Types: VersionTypes
@@ -1001,5 +1001,23 @@ end
 Package(name::AbstractString) = PackageSpec(name)
 Package(name::AbstractString, uuid::UUID) = PackageSpec(name, uuid)
 Package(name::AbstractString, uuid::UUID, version::VersionTypes) = PackageSpec(name, uuid, version)
+
+
+"""
+    @__VERSION__ -> Union{VersionNumber, Nothing}
+
+Get the `VersionNumber` of the package which expands this macro. If executed outside of a
+package `nothing` will be returned.
+"""
+macro __VERSION__()
+    pkg_dir = pkgdir(__module__)
+
+    if pkg_dir !== nothing
+        project_data = TOML.parsefile(Types.projectfile_path(pkg_dir))
+        return VersionNumber(project_data["version"])
+    else
+        return nothing
+    end
+end
 
 end # module
