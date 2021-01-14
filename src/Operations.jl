@@ -1653,6 +1653,59 @@ function print_diff(io::IO, old::Union{Nothing,PackageSpec}, new::Union{Nothing,
     end
 end
 
+function compat_info(pkg::PackageSpec, env::EnvCache, regs::Vector{Registry.RegistryInstance})
+    manifest, project = env.manifest, env.project
+    packages_holding_back = String[]
+    max_version = v"0.0.0"
+    for reg in regs
+        reg_pkg = get(reg, pkg.uuid, nothing)
+        reg_pkg === nothing && continue
+        info = Registry.registry_info(reg_pkg)
+        reg_compat_info = Registry.compat_info(info)
+        max_version = max(max_version, maximum(keys(reg_compat_info)))
+    end
+    max_version == v"0.0.0" && return nothing
+    is_direct_dep = pkg.uuid in values(project.deps)
+    if is_direct_dep
+        compat_info = get(project.compat, pkg.name, nothing)
+        if compat_info !== nothing
+            compat_info = Pkg.Versions.semver_spec(compat_info)
+            if !(max_version in compat_info)
+                push!(packages_holding_back, "project compat")
+                return packages_holding_back, max_version
+            end
+        end
+    end
+    if pkg.version !== max_version
+        manifest_info = get(manifest, pkg.uuid, nothing)
+        manifest_info === nothing && return packages_holding_back, max_version
+        for (uuid, dep_pkg) in manifest
+            is_stdlib(uuid) && continue
+            if !(pkg.uuid in values(dep_pkg.deps))
+                continue
+            end
+
+            dep_info = get(manifest, uuid, nothing)
+            dep_info === nothing && continue
+            for reg in regs
+                reg_pkg = get(reg, uuid, nothing)
+                reg_pkg === nothing && continue
+                info = Registry.registry_info(reg_pkg)
+                reg_compat_info = Registry.compat_info(info)
+                compat_info_v = get(reg_compat_info, dep_info.version, nothing)
+                compat_info_v === nothing && continue
+                compat_info_v_uuid = compat_info_v[pkg.uuid]
+                if !(max_version in compat_info_v_uuid)
+                    push!(packages_holding_back, dep_pkg.name)
+                end
+            end
+        end
+        return packages_holding_back, max_version
+    else
+        return nothing
+    end
+end
+
 function diff_array(old_ctx::Union{Context,Nothing}, new_ctx::Context; manifest=true)
     function index_pkgs(pkgs, uuid)
         idx = findfirst(pkg -> pkg.uuid == uuid, pkgs)
@@ -1679,8 +1732,9 @@ function is_package_downloaded(project_file::String, pkg::PackageSpec)
 end
 
 function print_status(ctx::Context, old_ctx::Union{Nothing,Context}, header::Symbol,
-                      uuids::Vector, names::Vector; manifest=true, diff=false)
+                      uuids::Vector, names::Vector; manifest=true, diff=false, compat::Bool=false)
     not_installed_indicator = sprint((io, args) -> printstyled(io, args...; color=:red), "→", context=ctx.io)
+    not_latest_version_indicator = sprint((io, args) -> printstyled(io, args...; color=:yellow), "x", context=ctx.io)
     ctx.io = something(ctx.status_io, ctx.io) # for instrumenting tests
     filter = !isempty(uuids) || !isempty(names)
     # setup
@@ -1707,19 +1761,44 @@ function print_status(ctx::Context, old_ctx::Union{Nothing,Context}, header::Sym
     # Sort stdlibs and _jlls towards the end in status output
     xs = sort!(xs, by = (x -> (is_stdlib(x[1]), endswith(something(x[3], x[2]).name, "_jll"), something(x[3], x[2]).name, x[1])))
     all_packages_downloaded = true
+    all_latest_version = true
     for (uuid, old, new) in xs
         if Types.is_project_uuid(ctx.env, uuid)
             continue
         end
         pkg_downloaded = !is_instantiated(new) || is_package_downloaded(ctx.env.project_file, new)
         all_packages_downloaded &= pkg_downloaded
+
+        latest_version = true
+        # Compat info
+        if compat
+            if diff == false && !is_stdlib(new.uuid)
+                @assert old == nothing
+                info = compat_info(new, ctx.env, ctx.registries)
+                if info !== nothing
+                    packages_holding_back, max_version = info
+                    all_latest_version = false
+                    latest_version = false
+                end
+            end
+        end
+
         print(ctx.io, pkg_downloaded ? " " : not_installed_indicator)
+        print(ctx.io, latest_version ? " " : not_latest_version_indicator)
         printstyled(ctx.io, " [", string(uuid)[1:8], "] "; color = :light_black)
         diff ? print_diff(ctx.io, old, new) : print_single(ctx.io, new)
+        if compat && !diff && !latest_version
+            pkg_str = isempty(packages_holding_back) ? "?" : join(packages_holding_back, ", ")
+            printstyled(" ", max_version, ": ", pkg_str; color=Base.warn_color())
+        end
+
         println(ctx.io)
     end
     if !all_packages_downloaded
         printpkgstyle(ctx.io, :Info, "packages marked with $not_installed_indicator not downloaded, use `instantiate` to download", true)
+    end
+    if !all_latest_version
+        printpkgstyle(ctx.io, :Info, "packages marked with $not_latest_version_indicator not at latest version, latest version and packages holding back shown", true)
     end
     return nothing
 end
@@ -1750,7 +1829,8 @@ function show_update(ctx::Context)
 end
 
 function status(ctx::Context, pkgs::Vector{PackageSpec}=PackageSpec[];
-                header=nothing, mode::PackageMode=PKGMODE_PROJECT, git_diff::Bool=false, env_diff=nothing)
+                header=nothing, mode::PackageMode=PKGMODE_PROJECT, git_diff::Bool=false, env_diff=nothing,
+                compat::Bool=false)
     ctx.io == Base.devnull && return
     # if a package, print header
     if header === nothing && ctx.env.pkg !== nothing
@@ -1778,10 +1858,10 @@ function status(ctx::Context, pkgs::Vector{PackageSpec}=PackageSpec[];
     diff = old_ctx !== nothing
     header = something(header, diff ? :Diff : :Status)
     if mode == PKGMODE_PROJECT || mode == PKGMODE_COMBINED
-        print_status(ctx, old_ctx, header, filter_uuids, filter_names; manifest=false, diff=diff)
+        print_status(ctx, old_ctx, header, filter_uuids, filter_names; manifest=false, diff, compat)
     end
     if mode == PKGMODE_MANIFEST || mode == PKGMODE_COMBINED
-        print_status(ctx, old_ctx, header, filter_uuids, filter_names; diff=diff)
+        print_status(ctx, old_ctx, header, filter_uuids, filter_names; diff, compat)
     end
 end
 
