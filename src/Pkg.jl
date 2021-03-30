@@ -155,6 +155,19 @@ Pkg.precompile()
 const precompile = API.precompile
 
 """
+    Pkg.why(pkg::Union{String, Vector{String}})
+    Pkg.why(pkg::Union{PackageSpec, Vector{PackageSpec}})
+
+Show the reason why this package is in the manifest.
+The output is a the different way to reach the package
+through the dependency graph starting from the dependencies.
+
+!!! compat "Julia 1.6"
+    This function requires at least Julia 1.6.
+"""
+const why = API.why
+
+"""
     Pkg.rm(pkg::Union{String, Vector{String}})
     Pkg.rm(pkg::Union{PackageSpec, Vector{PackageSpec}})
 
