@@ -1534,6 +1534,17 @@ function gen_target_project(env::EnvCache, registries::Vector{Registry.RegistryI
     return test_project
 end
 
+function check_case_conflicts(pkg, source_path::String)
+    for (root, dirs, files) in walkdir(source_path)
+        paths = vcat(dirs, files)
+        uniquepaths = unique(lowercase, paths)
+        if length(uniquepaths) != length(paths)
+            conflicts=setdiff(paths, uniquepaths)
+            @warn "$(pkg.name) contains case sensitive file distinction in $root" conflicts
+        end
+    end
+end
+
 testdir(source_path::String) = joinpath(source_path, "test")
 testfile(source_path::String) = joinpath(testdir(source_path), "runtests.jl")
 function test(ctx::Context, pkgs::Vector{PackageSpec};
@@ -1566,6 +1577,7 @@ function test(ctx::Context, pkgs::Vector{PackageSpec};
         sourcepath = project_rel_path(ctx.env, source_path(ctx.env.project_file, pkg, ctx.julia_version)) # TODO
         !isfile(testfile(sourcepath)) && push!(missing_runtests, pkg.name)
         push!(source_paths, sourcepath)
+        check_case_conflicts(pkg, sourcepath)
     end
     if !isempty(missing_runtests)
         pkgerror(length(missing_runtests) == 1 ? "Package " : "Packages ",
